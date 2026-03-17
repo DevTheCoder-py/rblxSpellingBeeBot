@@ -23,7 +23,7 @@ Speech-to-text helper designed to automatically play Roblox spelling bee games b
 - A Vosk model  
   Download from: https://alphacephei.com/vosk/models
 
-### Linux only
+### Linux only (Ignore for Mac/Windows)
 - `ydotool`
 - `ydotoold` running
 - `libinput` (for F12 detection)
