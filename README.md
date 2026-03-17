@@ -1,4 +1,4 @@
-# listen.py
+# The bot
 
 Speech-to-text helper designed to automatically play Roblox spelling bee games by listening to system audio, extracting words, and typing them.
 
