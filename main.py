@@ -20,17 +20,17 @@ from vosk import Model, KaldiRecognizer
 #  Set AUDIO_DEVICE_ID to None to auto-select or prompt.
 #
 #  AUTO_SELECT_DEVICE:
-#    True  → intelligently pick the best input device silently
+#    True  → intelligently pick the best loopback/monitor device silently
 #    False → show a menu and let the user choose
 # ─────────────────────────────────────────────────────────────
-AUDIO_DEVICE_ID     = 21   # e.g. 21, or None to auto/prompt
-AUTO_SELECT_DEVICE  = True   # True = smart auto-pick, False = interactive menu
+AUDIO_DEVICE_ID     = None   # e.g. 21, or None to auto/prompt
+AUTO_SELECT_DEVICE  = False   # True = smart auto-pick, False = interactive menu
 
 SAMPLE_RATE       = 48000
-BLOCK_SIZE        = 2000       # smaller block → faster last word updates
-STRICT_MODE       = True       # Set to True to only accept words defined in words.json
-AUTO_TYPE         = True       # Set to True to automatically type the last recognised word
-MAX_COMBINE_WORDS = 1          # Max number of words to combine when checking for mappings
+BLOCK_SIZE        = 2000
+STRICT_MODE       = True
+AUTO_TYPE         = True
+MAX_COMBINE_WORDS = 1
 MODEL_PATH        = (
     sys.argv[1] if len(sys.argv) > 1
     else os.environ.get("VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/model"))
@@ -38,37 +38,25 @@ MODEL_PATH        = (
 
 OS = platform.system()
 
-# ─────────────────────────────────────────────────────────────
-#  DEVICE SELECTION LOGIC
-# ─────────────────────────────────────────────────────────────
-
 def _score_device(dev: dict) -> int:
-    """
-    Heuristic scoring for auto-selecting the best microphone.
-    Higher score = better candidate.
-    """
     name  = dev.get("name", "").lower()
     score = 0
 
-    # Must be an input device
     if dev.get("max_input_channels", 0) < 1:
         return -1
 
-    # Penalise obvious non-mic / loopback / virtual devices
-    penalise = ["monitor", "loopback", "virtual", "null", "pulse", "pipewire", "default",
-                "hdmi", "displayport", "spdif", "iec958", "hw:0,", "hw:1,"]
+    reward = ["monitor", "loopback", "stereo mix", "what u hear", "wave out", "output",
+              "speaker", "playback", "virtual", "cable", "sum", "mix"]
+    for kw in reward:
+        if kw in name:
+            score += 10
+
+    penalise = ["mic", "microphone", "headset", "webcam", "capture", "record",
+                "built-in input", "internal mic", "array", "input only"]
     for kw in penalise:
         if kw in name:
             score -= 10
 
-    # Reward likely real microphones
-    reward = ["mic", "microphone", "headset", "webcam", "usb", "audio", "input",
-              "capture", "record", "analog", "built-in", "internal", "array"]
-    for kw in reward:
-        if kw in name:
-            score += 5
-
-    # Prefer devices whose default sample rate is close to what we need
     default_sr = dev.get("default_samplerate", 0)
     if default_sr == SAMPLE_RATE:
         score += 3
@@ -79,7 +67,6 @@ def _score_device(dev: dict) -> int:
 
 
 def _auto_select_device() -> int:
-    """Pick the highest-scoring input device."""
     devices  = sd.query_devices()
     best_id  = None
     best_sc  = -999
@@ -91,7 +78,7 @@ def _auto_select_device() -> int:
             best_id = idx
 
     if best_id is None:
-        print("[listen.py] No suitable input device found.", file=sys.stderr)
+        print("[listen.py] No suitable loopback/monitor device found.", file=sys.stderr)
         sys.exit(1)
 
     dev_name = devices[best_id]["name"]
@@ -100,23 +87,21 @@ def _auto_select_device() -> int:
 
 
 def _interactive_select_device() -> int:
-    """Print a menu of input devices and let the user pick one."""
     devices     = sd.query_devices()
     input_devs  = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 0) > 0]
 
     if not input_devs:
-        print("[listen.py] No input devices found.", file=sys.stderr)
+        print("[listen.py] No input-capable devices found.", file=sys.stderr)
         sys.exit(1)
 
-    # Compute scores so we can show a suggested default
     scored = sorted(input_devs, key=lambda x: _score_device(x[1]), reverse=True)
     suggested_id = scored[0][0]
 
-    print("\n[listen.py] Available input devices:", file=sys.stderr)
+    print("\n[listen.py] Available input-capable devices:", file=sys.stderr)
     print(f"  {'ID':>3}  {'Channels':>8}  {'Sample Rate':>12}  Name", file=sys.stderr)
     print(f"  {'─'*3}  {'─'*8}  {'─'*12}  {'─'*40}", file=sys.stderr)
     for idx, dev in input_devs:
-        marker = " ← suggested" if idx == suggested_id else ""
+        marker = " ← suggested (loopback/monitor)" if idx == suggested_id else ""
         print(
             f"  {idx:>3}  {dev['max_input_channels']:>8}  "
             f"{int(dev['default_samplerate']):>12}  {dev['name']}{marker}",
@@ -135,7 +120,8 @@ def _interactive_select_device() -> int:
     else:
         try:
             chosen = int(raw)
-            if chosen not in dict(input_devs):
+            valid_ids = {i for i, _ in input_devs}
+            if chosen not in valid_ids:
                 raise ValueError
         except ValueError:
             print(f"[listen.py] Invalid choice — using suggested device {suggested_id}.", file=sys.stderr)
@@ -147,12 +133,6 @@ def _interactive_select_device() -> int:
 
 
 def resolve_audio_device() -> int:
-    """
-    Return the device ID to use, following this priority:
-      1. AUDIO_DEVICE_ID is set explicitly → use it directly.
-      2. AUTO_SELECT_DEVICE is True        → auto-pick the best mic.
-      3. AUTO_SELECT_DEVICE is False       → show interactive menu.
-    """
     if AUDIO_DEVICE_ID is not None:
         devices = sd.query_devices()
         name = devices[AUDIO_DEVICE_ID]["name"] if AUDIO_DEVICE_ID < len(devices) else "unknown"
@@ -165,7 +145,6 @@ def resolve_audio_device() -> int:
         return _interactive_select_device()
 
 
-# Resolve once at startup before the model loads (so the user isn't waiting mid-load)
 DEVICE_ID = resolve_audio_device()
 
 # ─────────────────────────────────────────────────────────────
@@ -404,7 +383,7 @@ def listen_loop() -> None:
         channels=1,
         callback=audio_callback,
     ):
-        print("[listen.py] Always listening. Press F12 to type last recognised word.", file=sys.stderr)
+        print("[listen.py] Always listening. Press F12 to type last recognised word.\n If nothing is detected please manually select sound device", file=sys.stderr)
 
         prev_word = None
 
