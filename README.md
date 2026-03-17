@@ -58,7 +58,7 @@ python listen.py
 
 Or specify a model path directly:
 ```bash
-python listen.py /path/to/model
+python listen.py /path/to/voskmodel
 ```
 
 ---
